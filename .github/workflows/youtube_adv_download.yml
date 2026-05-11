@@ -1,5 +1,4 @@
-name: دانلودر یوتیوب پیشرفته
-
+name: Advanced YouTube Downloader
 
 on:
   workflow_dispatch:
@@ -8,20 +7,19 @@ on:
         description: 'YouTube URL (video or playlist)'
         required: true
         type: string
-
       output_format:
-        description: 'Output format'
+        description: 'Output Format'
         required: true
+        default: 'mp4 (video)'
         type: choice
         options:
-          - mp4 (video)
-          - mp3 (audio only)
-          - best (auto)
-        default: 'mp4 (video)'
-
+          - 'mp4 (video)'
+          - 'mp3 (audio only)'
+          - 'best (auto)'
       video_quality:
-        description: 'Max video resolution to download'
+        description: 'Video Quality (Height)'
         required: false
+        default: '1080 (Full HD)'
         type: choice
         options:
           - '2160 (4K)'
@@ -31,298 +29,232 @@ on:
           - '360'
           - '144'
           - 'best'
-        default: '1080 (Full HD)'
-
       audio_quality:
-        description: 'Audio bitrate — applies to MP3 downloads'
+        description: 'Audio Quality (Kbps)'
         required: false
+        default: '192'
         type: choice
         options:
           - '320'
           - '192'
           - '128'
           - '64'
-        default: '192'
-
       video_codec:
-        description: 'Preferred video codec (ignored for audio-only)'
+        description: 'Preferred Video Codec'
         required: false
+        default: 'any (auto)'
         type: choice
         options:
           - 'any (auto)'
           - 'h264 (MP4 compatible)'
           - 'vp9'
           - 'av1'
-        default: 'any (auto)'
-
       concurrent_fragments:
-        description: 'Parallel download fragments — more = faster but higher bandwidth'
+        description: 'Concurrent Fragments (Speed)'
         required: false
+        default: '4'
         type: choice
         options:
-          - '4'
-          - '8'
           - '16'
+          - '8'
+          - '4'
           - '1'
-        default: '4'
-
       sponsorblock:
-        description: 'Skip sponsor / intro / outro segments via SponsorBlock'
-        required: false
-        type: boolean
+        description: 'Remove SponsorBlock segments'
         default: false
-
+        type: boolean
       embed_chapters:
-        description: 'Embed chapter markers into the output file'
-        required: false
-        type: boolean
+        description: 'Embed Chapters'
         default: true
-
+        type: boolean
       write_description:
-        description: 'Save video description as a .description text file'
-        required: false
-        type: boolean
+        description: 'Write Video Description'
         default: false
-
+        type: boolean
       trim_start:
-        description: 'Trim start timestamp (e.g. 0:33 or 1:22:10) — leave empty to skip'
+        description: 'Trim Start (e.g., 00:01:30)'
         required: false
         type: string
-
       trim_end:
-        description: 'Trim end timestamp (e.g. 1:22 or 2:00:00) — leave empty to skip'
+        description: 'Trim End (e.g., 00:05:00)'
         required: false
         type: string
-
       playlist_items:
-        description: |
-          Playlist items to download:
-          Leave empty = single video only
-          all = full playlist
-          3-7 = items 3 through 7
-          1,3,5 = specific items
+        description: 'Playlist Items (e.g., 1,3,5 or 3-7 or all)'
         required: false
         type: string
-
       cookies:
-        description: |
-          Cookie string (Netscape format) to bypass geo/age restrictions.
-          Safer alternative: store as a repo secret named YT_COOKIES — used automatically.
+        description: 'Netscape Cookies (Bypass restrictions)'
         required: false
         type: string
-
       download_subtitles:
-        description: 'Download subtitle files'
-        required: false
-        type: boolean
+        description: 'Download Subtitles'
         default: false
-
-      subtitle_langs:
-        description: 'Subtitle languages, comma-separated (e.g. en,fa)'
-        required: false
-        type: string
-        default: 'en'
-
-      embed_metadata:
-        description: 'Embed thumbnail and metadata into the output file'
-        required: false
         type: boolean
+      subtitle_langs:
+        description: 'Subtitle Languages (comma separated)'
+        default: 'en,fa'
+        type: string
+      embed_metadata:
+        description: 'Embed Thumbnail & Metadata'
         default: true
-
+        type: boolean
       max_part_mb:
-        description: 'Maximum part size in MB for splitting (0 = no split)'
-        required: false
-        type: number
+        description: 'Max Part Size for Split (MB)'
         default: 90
-
+        type: number
       output_folder:
-        description: 'Folder to store downloads (relative to repo root)'
-        required: false
-        type: string
+        description: 'Output Folder Path'
         default: 'downloads'
-
+        type: string
       extra_args:
-        description: 'Extra yt-dlp arguments (advanced users)'
+        description: 'Extra yt-dlp arguments'
         required: false
         type: string
-
-permissions:
-  contents: write
 
 jobs:
-  fetch-and-store:
+  download_and_commit:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
+    
     steps:
-      - name: Clone repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          python-version: '3.11'
 
-      - name: Install tools
+      - name: Install Dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg zip
-          pip install -q -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
-          git clone --depth 1 --branch 1.3.1 \
-            https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
-            /tmp/bgutil
-          cd /tmp/bgutil/server && npm ci && npx tsc
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg zip nodejs
+          python -m pip install --upgrade pip
+          pip install -U yt-dlp
 
-      - name: Start PO Token provider server
+      - name: Prepare Output Directory & Cookies
         run: |
-          node /tmp/bgutil/server/build/main.js &
-          sleep 5
-
-      - name: Download media
-        run: |
-          URL="${{ github.event.inputs.video_url }}"
-          FORMAT_INPUT="${{ github.event.inputs.output_format }}"
-          VIDEO_QUALITY="${{ github.event.inputs.video_quality }}"
-          AUDIO_Q="${{ github.event.inputs.audio_quality }}"
-          CODEC="${{ github.event.inputs.video_codec }}"
-          FRAGMENTS="${{ github.event.inputs.concurrent_fragments }}"
-          OUTPUT_FOLDER="${{ github.event.inputs.output_folder }}"
-          TRIM_START="${{ github.event.inputs.trim_start }}"
-          TRIM_END="${{ github.event.inputs.trim_end }}"
-          PLAYLIST_ITEMS="${{ github.event.inputs.playlist_items }}"
-          SUBTITLES="${{ github.event.inputs.download_subtitles }}"
-          SUB_LANGS="${{ github.event.inputs.subtitle_langs }}"
-          EMBED_META="${{ github.event.inputs.embed_metadata }}"
-          EMBED_CHAPTERS="${{ github.event.inputs.embed_chapters }}"
-          SPONSORBLOCK="${{ github.event.inputs.sponsorblock }}"
-          WRITE_DESC="${{ github.event.inputs.write_description }}"
-          EXTRA_ARGS="${{ github.event.inputs.extra_args }}"
-
-          mkdir -p "$OUTPUT_FOLDER"
-
-          # Cookie handling: prefer inline input, fallback to YT_COOKIES secret
-          COOKIE_ARGS=""
-          if [ -n "$INPUT_COOKIES" ]; then
-            printf '%s' "$INPUT_COOKIES" > /tmp/cookies.txt
-            COOKIE_ARGS="--cookies /tmp/cookies.txt"
-          elif [ -n "$SECRET_YT_COOKIES" ]; then
-            printf '%s' "$SECRET_YT_COOKIES" > /tmp/cookies.txt
-            COOKIE_ARGS="--cookies /tmp/cookies.txt"
-          fi
-
-          # Extract numeric height from quality string (e.g. "2160 (4K)" -> "2160")
-          QUALITY_NUM=$(echo "$VIDEO_QUALITY" | grep -o '[0-9]*' | head -1)
-
-          # Codec filter
-          case "$CODEC" in
-            "h264 (MP4 compatible)") CODEC_FILTER="[vcodec^=avc]" ; MERGE_FMT="mp4" ;;
-            "vp9")                   CODEC_FILTER="[vcodec^=vp9]" ; MERGE_FMT="mkv" ;;
-            "av1")                   CODEC_FILTER="[vcodec^=av01]"; MERGE_FMT="mkv" ;;
-            *)                       CODEC_FILTER=""               ; MERGE_FMT="mp4" ;;
-          esac
-
-          # Format / quality selection
-          if [ "$FORMAT_INPUT" = "mp3 (audio only)" ]; then
-            FORMAT_ARGS="-x --audio-format mp3 --audio-quality ${AUDIO_Q}K"
-          elif [ "$FORMAT_INPUT" = "best (auto)" ] || [ "$VIDEO_QUALITY" = "best" ]; then
-            FORMAT_ARGS="-f bestvideo+bestaudio --merge-output-format mp4"
+          mkdir -p "${{ inputs.output_folder }}"
+          if [ -n "${{ inputs.cookies }}" ]; then
+            echo "${{ inputs.cookies }}" > cookies.txt
+            echo "COOKIES_FILE=--cookies cookies.txt" >> $GITHUB_ENV
           else
-            if [ -n "$CODEC_FILTER" ]; then
-              FORMAT_ARGS="-f bestvideo[height<=${QUALITY_NUM}]${CODEC_FILTER}+bestaudio/bestvideo[height<=${QUALITY_NUM}]+bestaudio/best[height<=${QUALITY_NUM}] --merge-output-format ${MERGE_FMT}"
-            else
-              FORMAT_ARGS="-f bestvideo[height<=${QUALITY_NUM}]+bestaudio/best[height<=${QUALITY_NUM}] --merge-output-format mp4"
-            fi
+            echo "COOKIES_FILE=" >> $GITHUB_ENV
           fi
 
-          # Trim / section
-          SECTION_ARGS=""
-          if [ -n "$TRIM_START" ] && [ -n "$TRIM_END" ]; then
-            SECTION_ARGS="--download-sections *${TRIM_START}-${TRIM_END} --force-keyframes-at-cuts"
-          elif [ -n "$TRIM_START" ]; then
-            SECTION_ARGS="--download-sections *${TRIM_START}-inf --force-keyframes-at-cuts"
-          elif [ -n "$TRIM_END" ]; then
-            SECTION_ARGS="--download-sections *0-${TRIM_END} --force-keyframes-at-cuts"
-          fi
-
-          # Playlist range
-          PLAYLIST_ARGS="--no-playlist"
-          if [ -n "$PLAYLIST_ITEMS" ]; then
-            if [ "$PLAYLIST_ITEMS" = "all" ]; then
-              PLAYLIST_ARGS=""
-            else
-              PLAYLIST_ARGS="--playlist-items $PLAYLIST_ITEMS"
-            fi
-          fi
-
-          # Subtitles
-          SUBTITLE_ARGS=""
-          if [ "$SUBTITLES" = "true" ]; then
-            SUBTITLE_ARGS="--write-subs --write-auto-subs --sub-langs ${SUB_LANGS}"
-          fi
-
-          # Metadata / thumbnail embedding
-          META_ARGS=""
-          if [ "$EMBED_META" = "true" ]; then
-            META_ARGS="--embed-thumbnail --embed-metadata --add-metadata"
-          fi
-
-          # Chapter markers
-          CHAPTER_ARGS=""
-          if [ "$EMBED_CHAPTERS" = "true" ]; then
-            CHAPTER_ARGS="--embed-chapters"
-          fi
-
-          # SponsorBlock
-          SPONSOR_ARGS=""
-          if [ "$SPONSORBLOCK" = "true" ]; then
-            SPONSOR_ARGS="--sponsorblock-remove sponsor,intro,outro,selfpromo,interaction"
-          fi
-
-          # Description file
-          DESC_ARGS=""
-          if [ "$WRITE_DESC" = "true" ]; then
-            DESC_ARGS="--write-description"
-          fi
-
-          yt-dlp \
-            --js-runtimes node \
-            --newline \
-            --extractor-args "youtube:player_client=web_music,web,tv" \
-            --concurrent-fragments "${FRAGMENTS}" \
-            $FORMAT_ARGS \
-            $SECTION_ARGS \
-            $SUBTITLE_ARGS \
-            $META_ARGS \
-            $CHAPTER_ARGS \
-            $SPONSOR_ARGS \
-            $DESC_ARGS \
-            $PLAYLIST_ARGS \
-            $COOKIE_ARGS \
-            -o "$OUTPUT_FOLDER/%(title)s [%(id)s].%(ext)s" \
-            $EXTRA_ARGS \
-            "$URL"
-        env:
-          INPUT_COOKIES: ${{ github.event.inputs.cookies }}
-          SECRET_YT_COOKIES: ${{ secrets.YT_COOKIES }}
-
-      - name: Split oversized files (optional)
+      - name: Build yt-dlp Command & Execute
         run: |
-          OUTPUT_FOLDER="${{ github.event.inputs.output_folder }}"
-          THRESH_MB=${{ github.event.inputs.max_part_mb }}
-          THRESH_BYTES=$((THRESH_MB * 1024 * 1024))
-
-          for f in "$OUTPUT_FOLDER"/*; do
-            [ -f "$f" ] || continue
-            fs=$(stat -c%s "$f")
-            fname=$(basename "$f")
-            if [ "$THRESH_BYTES" -gt 0 ] && [ "$fs" -gt "$THRESH_BYTES" ]; then
-              zip -j -s "${THRESH_MB}m" "$OUTPUT_FOLDER/${fname}.zip" "$f"
-              rm "$f"
+          URL="${{ inputs.video_url }}"
+          CMD="yt-dlp $URL"
+          
+          # 1. Format & Quality Logic
+          FORMAT_INPUT="${{ inputs.output_format }}"
+          V_QUAL="${{ inputs.video_quality }}"
+          A_QUAL="${{ inputs.audio_quality }}"
+          V_CODEC="${{ inputs.video_codec }}"
+          
+          # Extract numerical height (e.g., "1080 (Full HD)" -> "1080")
+          if [[ "$V_QUAL" != "best" ]]; then
+            HEIGHT=$(echo "$V_QUAL" | grep -oE '^[0-9]+')
+          else
+            HEIGHT="best"
+          fi
+          
+          if [[ "$FORMAT_INPUT" == "mp3 (audio only)" ]]; then
+            CMD="$CMD -x --audio-format mp3 --audio-quality ${A_QUAL}K"
+          elif [[ "$FORMAT_INPUT" == "best (auto)" ]]; then
+            CMD="$CMD -f bestvideo+bestaudio --merge-output-format mp4"
+          else
+            # Video Format Construction
+            FORMAT_STR="bestvideo"
+            if [[ "$HEIGHT" != "best" ]]; then
+              FORMAT_STR="$FORMAT_STR[height<=$HEIGHT]"
             fi
+            
+            # Codec Selection
+            if [[ "$V_CODEC" == "h264 (MP4 compatible)" ]]; then
+              FORMAT_STR="$FORMAT_STR[vcodec^=avc]"
+            elif [[ "$V_CODEC" == "vp9" ]]; then
+              FORMAT_STR="$FORMAT_STR[vcodec^=vp9]"
+            elif [[ "$V_CODEC" == "av1" ]]; then
+              FORMAT_STR="$FORMAT_STR[vcodec^=av01]"
+            fi
+            
+            CMD="$CMD -f \"$FORMAT_STR+bestaudio/best\" --merge-output-format mp4"
+          fi
+
+          # 2. Performance
+          CMD="$CMD --concurrent-fragments ${{ inputs.concurrent_fragments }}"
+
+          # 3. Trimming
+          if [ -n "${{ inputs.trim_start }}" ] && [ -n "${{ inputs.trim_end }}" ]; then
+            CMD="$CMD --download-sections *${{ inputs.trim_start }}-${{ inputs.trim_end }} --force-keyframes-at-cuts"
+          elif [ -n "${{ inputs.trim_start }}" ]; then
+            CMD="$CMD --download-sections *${{ inputs.trim_start }}-inf --force-keyframes-at-cuts"
+          elif [ -n "${{ inputs.trim_end }}" ]; then
+            CMD="$CMD --download-sections *0-${{ inputs.trim_end }} --force-keyframes-at-cuts"
+          fi
+
+          # 4. Playlist Handling
+          if [ -z "${{ inputs.playlist_items }}" ]; then
+            CMD="$CMD --no-playlist"
+          elif [[ "${{ inputs.playlist_items }}" != "all" ]]; then
+            CMD="$CMD --playlist-items ${{ inputs.playlist_items }}"
+          fi
+
+          # 5. Subtitles
+          if [[ "${{ inputs.download_subtitles }}" == "true" ]]; then
+            CMD="$CMD --write-subs --write-auto-subs --sub-langs ${{ inputs.subtitle_langs }}"
+          fi
+
+          # 6. Metadata & Extras
+          if [[ "${{ inputs.embed_metadata }}" == "true" ]]; then
+            CMD="$CMD --embed-thumbnail --embed-metadata --add-metadata"
+          fi
+          
+          if [[ "${{ inputs.embed_chapters }}" == "true" ]]; then
+            CMD="$CMD --embed-chapters"
+          fi
+          
+          if [[ "${{ inputs.write_description }}" == "true" ]]; then
+            CMD="$CMD --write-description"
+          fi
+          
+          if [[ "${{ inputs.sponsorblock }}" == "true" ]]; then
+            CMD="$CMD --sponsorblock-remove sponsor,intro,outro,selfpromo,interaction"
+          fi
+
+          # 7. Output Template & Environment specific flags
+          CMD="$CMD -o \"${{ inputs.output_folder }}/%(title)s [%(id)s].%(ext)s\""
+          CMD="$CMD --js-runtimes node --newline"
+          
+          # Inject Extras and Cookies
+          CMD="$CMD $COOKIES_FILE ${{ inputs.extra_args }}"
+
+          # Execute
+          echo "Executing Command: $CMD"
+          eval $CMD
+
+      - name: Split Large Files (Bypass GitHub 100MB limit)
+        run: |
+          cd "${{ inputs.output_folder }}"
+          MAX_SIZE="${{ inputs.max_part_mb }}M"
+          
+          find . -type f -size +$MAX_SIZE -print0 | while IFS= read -r -d '' file; do
+            echo "Splitting $file..."
+            zip -j -s ${{ inputs.max_part_mb }}m "${file}.zip" "$file"
+            rm "$file" # Remove original to save space and avoid push errors
           done
 
-      - name: Push changes to repository
+      - name: Commit and Push to Repository
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ github.event.inputs.output_folder }}/"
-          git commit -m "Download media [skip ci]" || echo "Nothing to commit"
-          git push
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${{ inputs.output_folder }}/*"
+          
+          if git diff-index --quiet HEAD; then
+            echo "No changes to commit."
+          else
+            git commit -m "Download media via UI Panel [skip ci]"
+            git push
+          fi
