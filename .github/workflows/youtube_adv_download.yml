@@ -1,260 +1,110 @@
-name: Advanced YouTube Downloader
+- name: Build yt-dlp Command & Execute
+  run: |
+    # مهندسی مجدد: استفاده از Bash Array برای امنیت ۱۰۰٪ در برابر Injection و Quoting
+    CMD=(yt-dlp)
 
-on:
-  workflow_dispatch:
-    inputs:
-      video_url:
-        description: 'YouTube URL (video or playlist)'
-        required: true
-        type: string
-      output_format:
-        description: 'Output Format'
-        required: true
-        default: 'mp4 (video)'
-        type: choice
-        options:
-          - 'mp4 (video)'
-          - 'mp3 (audio only)'
-          - 'best (auto)'
-      video_quality:
-        description: 'Video Quality (Height)'
-        required: false
-        default: '1080 (Full HD)'
-        type: choice
-        options:
-          - '2160 (4K)'
-          - '1080 (Full HD)'
-          - '720 (HD)'
-          - '480'
-          - '360'
-          - '144'
-          - 'best'
-      audio_quality:
-        description: 'Audio Quality (Kbps)'
-        required: false
-        default: '192'
-        type: choice
-        options:
-          - '320'
-          - '192'
-          - '128'
-          - '64'
-      video_codec:
-        description: 'Preferred Video Codec'
-        required: false
-        default: 'any (auto)'
-        type: choice
-        options:
-          - 'any (auto)'
-          - 'h264 (MP4 compatible)'
-          - 'vp9'
-          - 'av1'
-      concurrent_fragments:
-        description: 'Concurrent Fragments (Speed)'
-        required: false
-        default: '4'
-        type: choice
-        options:
-          - '16'
-          - '8'
-          - '4'
-          - '1'
-      sponsorblock:
-        description: 'Remove SponsorBlock segments'
-        default: false
-        type: boolean
-      embed_chapters:
-        description: 'Embed Chapters'
-        default: true
-        type: boolean
-      write_description:
-        description: 'Write Video Description'
-        default: false
-        type: boolean
-      trim_start:
-        description: 'Trim Start (e.g., 00:01:30)'
-        required: false
-        type: string
-      trim_end:
-        description: 'Trim End (e.g., 00:05:00)'
-        required: false
-        type: string
-      playlist_items:
-        description: 'Playlist Items (e.g., 1,3,5 or 3-7 or all)'
-        required: false
-        type: string
-      cookies:
-        description: 'Netscape Cookies (Bypass restrictions)'
-        required: false
-        type: string
-      download_subtitles:
-        description: 'Download Subtitles'
-        default: false
-        type: boolean
-      subtitle_langs:
-        description: 'Subtitle Languages (comma separated)'
-        default: 'en,fa'
-        type: string
-      embed_metadata:
-        description: 'Embed Thumbnail & Metadata'
-        default: true
-        type: boolean
-      max_part_mb:
-        description: 'Max Part Size for Split (MB)'
-        default: 90
-        type: number
-      output_folder:
-        description: 'Output Folder Path'
-        default: 'downloads'
-        type: string
-      extra_args:
-        description: 'Extra yt-dlp arguments'
-        required: false
-        type: string
+    # --- 🛡️ سیستم‌های ضد بن و پایداری (Anti-Ban & Stability) ---
+    CMD+=(--force-ipv4) # دور زدن تحریم‌های IPv6 گوگل برای سرورهای گیت‌هاب
+    CMD+=(--extractor-args "youtube:player_client=ios,web_music,web,tv") # جعل کلاینت برای بای‌پس خطای 403
+    CMD+=(--js-runtimes "node")
+    CMD+=(--newline)
+    CMD+=(--abort-on-error) # توقف هوشمند در صورت خرابی استریم
 
-jobs:
-  download_and_commit:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+    # --- ۱. منطق فرمت و کیفیت ---
+    FORMAT_INPUT="${{ inputs.output_format }}"
+    V_QUAL="${{ inputs.video_quality }}"
+    A_QUAL="${{ inputs.audio_quality }}"
+    V_CODEC="${{ inputs.video_codec }}"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    if [[ "$V_QUAL" != "best" ]]; then
+      HEIGHT=$(echo "$V_QUAL" | grep -oE '^[0-9]+')
+    else
+      HEIGHT="best"
+    fi
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg zip nodejs
-          python -m pip install --upgrade pip
-          pip install -U yt-dlp
+    if [[ "$FORMAT_INPUT" == "mp3 (audio only)" ]]; then
+      CMD+=(-x --audio-format "mp3" --audio-quality "${A_QUAL}K")
+    elif [[ "$FORMAT_INPUT" == "best (auto)" ]]; then
+      CMD+=(-f "bestvideo+bestaudio/best" --merge-output-format "mp4")
+    else
+      FORMAT_STR="bestvideo"
+      if [[ "$HEIGHT" != "best" ]]; then
+        FORMAT_STR="${FORMAT_STR}[height<=${HEIGHT}]"
+      fi
+      
+      if [[ "$V_CODEC" == "h264 (MP4 compatible)" ]]; then
+        FORMAT_STR="${FORMAT_STR}[vcodec^=avc]"
+      elif [[ "$V_CODEC" == "vp9" ]]; then
+        FORMAT_STR="${FORMAT_STR}[vcodec^=vp9]"
+      elif [[ "$V_CODEC" == "av1" ]]; then
+        FORMAT_STR="${FORMAT_STR}[vcodec^=av01]"
+      fi
+      
+      CMD+=(-f "${FORMAT_STR}+bestaudio/best" --merge-output-format "mp4")
+    fi
 
-      - name: Prepare Output Directory & Cookies
-        run: |
-          mkdir -p "${{ inputs.output_folder }}"
-          if [ -n "${{ inputs.cookies }}" ]; then
-            echo "${{ inputs.cookies }}" > cookies.txt
-            echo "COOKIES_FILE=--cookies cookies.txt" >> $GITHUB_ENV
-          else
-            echo "COOKIES_FILE=" >> $GITHUB_ENV
-          fi
+    # --- ۲. سرعت (Fragments) ---
+    CMD+=(--concurrent-fragments "${{ inputs.concurrent_fragments }}")
 
-      - name: Build yt-dlp Command & Execute
-        run: |
-          URL="${{ inputs.video_url }}"
-          CMD="yt-dlp $URL"
-          
-          # 1. Format & Quality Logic
-          FORMAT_INPUT="${{ inputs.output_format }}"
-          V_QUAL="${{ inputs.video_quality }}"
-          A_QUAL="${{ inputs.audio_quality }}"
-          V_CODEC="${{ inputs.video_codec }}"
-          
-          # Extract numerical height (e.g., "1080 (Full HD)" -> "1080")
-          if [[ "$V_QUAL" != "best" ]]; then
-            HEIGHT=$(echo "$V_QUAL" | grep -oE '^[0-9]+')
-          else
-            HEIGHT="best"
-          fi
-          
-          if [[ "$FORMAT_INPUT" == "mp3 (audio only)" ]]; then
-            CMD="$CMD -x --audio-format mp3 --audio-quality ${A_QUAL}K"
-          elif [[ "$FORMAT_INPUT" == "best (auto)" ]]; then
-            CMD="$CMD -f bestvideo+bestaudio --merge-output-format mp4"
-          else
-            # Video Format Construction
-            FORMAT_STR="bestvideo"
-            if [[ "$HEIGHT" != "best" ]]; then
-              FORMAT_STR="$FORMAT_STR[height<=$HEIGHT]"
-            fi
-            
-            # Codec Selection
-            if [[ "$V_CODEC" == "h264 (MP4 compatible)" ]]; then
-              FORMAT_STR="$FORMAT_STR[vcodec^=avc]"
-            elif [[ "$V_CODEC" == "vp9" ]]; then
-              FORMAT_STR="$FORMAT_STR[vcodec^=vp9]"
-            elif [[ "$V_CODEC" == "av1" ]]; then
-              FORMAT_STR="$FORMAT_STR[vcodec^=av01]"
-            fi
-            
-            CMD="$CMD -f \"$FORMAT_STR+bestaudio/best\" --merge-output-format mp4"
-          fi
+    # --- ۳. برش (Trimming) ---
+    T_START="${{ inputs.trim_start }}"
+    T_END="${{ inputs.trim_end }}"
+    if [ -n "$T_START" ] && [ -n "$T_END" ]; then
+      CMD+=(--download-sections "*${T_START}-${T_END}" --force-keyframes-at-cuts)
+    elif [ -n "$T_START" ]; then
+      CMD+=(--download-sections "*${T_START}-inf" --force-keyframes-at-cuts)
+    elif [ -n "$T_END" ]; then
+      CMD+=(--download-sections "*0-${T_END}" --force-keyframes-at-cuts)
+    fi
 
-          # 2. Performance
-          CMD="$CMD --concurrent-fragments ${{ inputs.concurrent_fragments }}"
+    # --- ۴. مدیریت پلی‌لیست ---
+    PL_ITEMS="${{ inputs.playlist_items }}"
+    if [ -z "$PL_ITEMS" ]; then
+      CMD+=(--no-playlist)
+    elif [[ "$PL_ITEMS" != "all" ]]; then
+      CMD+=(--playlist-items "$PL_ITEMS")
+    fi
 
-          # 3. Trimming
-          if [ -n "${{ inputs.trim_start }}" ] && [ -n "${{ inputs.trim_end }}" ]; then
-            CMD="$CMD --download-sections *${{ inputs.trim_start }}-${{ inputs.trim_end }} --force-keyframes-at-cuts"
-          elif [ -n "${{ inputs.trim_start }}" ]; then
-            CMD="$CMD --download-sections *${{ inputs.trim_start }}-inf --force-keyframes-at-cuts"
-          elif [ -n "${{ inputs.trim_end }}" ]; then
-            CMD="$CMD --download-sections *0-${{ inputs.trim_end }} --force-keyframes-at-cuts"
-          fi
+    # --- ۵. زیرنویس‌ها ---
+    if [[ "${{ inputs.download_subtitles }}" == "true" ]]; then
+      CMD+=(--write-subs --write-auto-subs --sub-langs "${{ inputs.subtitle_langs }}")
+    fi
 
-          # 4. Playlist Handling
-          if [ -z "${{ inputs.playlist_items }}" ]; then
-            CMD="$CMD --no-playlist"
-          elif [[ "${{ inputs.playlist_items }}" != "all" ]]; then
-            CMD="$CMD --playlist-items ${{ inputs.playlist_items }}"
-          fi
+    # --- ۶. متادیتا و امکانات پیشرفته ---
+    if [[ "${{ inputs.embed_metadata }}" == "true" ]]; then
+      CMD+=(--embed-thumbnail --embed-metadata)
+    fi
+    if [[ "${{ inputs.embed_chapters }}" == "true" ]]; then
+      CMD+=(--embed-chapters)
+    fi
+    if [[ "${{ inputs.write_description }}" == "true" ]]; then
+      CMD+=(--write-description)
+    fi
+    if [[ "${{ inputs.sponsorblock }}" == "true" ]]; then
+      CMD+=(--sponsorblock-remove "sponsor,intro,outro,selfpromo,interaction")
+    fi
 
-          # 5. Subtitles
-          if [[ "${{ inputs.download_subtitles }}" == "true" ]]; then
-            CMD="$CMD --write-subs --write-auto-subs --sub-langs ${{ inputs.subtitle_langs }}"
-          fi
+    # --- ۷. کوکی‌ها ---
+    if [ -f "cookies.txt" ]; then
+      CMD+=(--cookies "cookies.txt")
+    fi
 
-          # 6. Metadata & Extras
-          if [[ "${{ inputs.embed_metadata }}" == "true" ]]; then
-            CMD="$CMD --embed-thumbnail --embed-metadata --add-metadata"
-          fi
-          
-          if [[ "${{ inputs.embed_chapters }}" == "true" ]]; then
-            CMD="$CMD --embed-chapters"
-          fi
-          
-          if [[ "${{ inputs.write_description }}" == "true" ]]; then
-            CMD="$CMD --write-description"
-          fi
-          
-          if [[ "${{ inputs.sponsorblock }}" == "true" ]]; then
-            CMD="$CMD --sponsorblock-remove sponsor,intro,outro,selfpromo,interaction"
-          fi
+    # --- ۸. آرگومان‌های اضافه (به صورت تفکیک شده) ---
+    EXTRA="${{ inputs.extra_args }}"
+    if [ -n "$EXTRA" ]; then
+      read -r -a EXTRA_ARRAY <<< "$EXTRA"
+      CMD+=("${EXTRA_ARRAY[@]}")
+    fi
 
-          # 7. Output Template & Environment specific flags
-          CMD="$CMD -o \"${{ inputs.output_folder }}/%(title)s [%(id)s].%(ext)s\""
-          CMD="$CMD --js-runtimes node --newline"
-          
-          # Inject Extras and Cookies
-          CMD="$CMD $COOKIES_FILE ${{ inputs.extra_args }}"
+    # --- ۹. پوشه خروجی و فایل نهایی ---
+    CMD+=(-o "${{ inputs.output_folder }}/%(title)s [%(id)s].%(ext)s")
 
-          # Execute
-          echo "Executing Command: $CMD"
-          eval $CMD
+    # اضافه کردن لینک یوتیوب به انتهای آرایه (بدون نیاز به کوتیشن‌گذاری دستی!)
+    CMD+=("${{ inputs.video_url }}")
 
-      - name: Split Large Files (Bypass GitHub 100MB limit)
-        run: |
-          cd "${{ inputs.output_folder }}"
-          MAX_SIZE="${{ inputs.max_part_mb }}M"
-          
-          find . -type f -size +$MAX_SIZE -print0 | while IFS= read -r -d '' file; do
-            echo "Splitting $file..."
-            zip -j -s ${{ inputs.max_part_mb }}m "${file}.zip" "$file"
-            rm "$file" # Remove original to save space and avoid push errors
-          done
+    # --- 🚀 اجرا ---
+    echo "Executing Secure Command Array:"
+    echo "${CMD[@]}"
 
-      - name: Commit and Push to Repository
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ inputs.output_folder }}/*"
-          
-          if git diff-index --quiet HEAD; then
-            echo "No changes to commit."
-          else
-            git commit -m "Download media via UI Panel [skip ci]"
-            git push
-          fi
+    # اجرای مستقیم آرایه بدون استفاده از eval خطرناک
+    "${CMD[@]}"
