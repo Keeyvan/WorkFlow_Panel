@@ -70,42 +70,123 @@ on:
 jobs:
   download:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      YTDLP_NO_UPDATE: "1"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install yt-dlp and ffmpeg
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg and yt-dlp
+        shell: bash
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          python3 -m pip install -U yt-dlp
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade yt-dlp
+
+          echo "yt-dlp version:"
+          yt-dlp --version
+          echo "ffmpeg version:"
+          ffmpeg -version | head -n 3
+
+      - name: Write cookies.txt from secret if provided
+        shell: bash
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${YOUTUBE_COOKIES:-}" ]]; then
+            printf '%s\n' "$YOUTUBE_COOKIES" > cookies.txt
+            chmod 600 cookies.txt
+            echo "cookies.txt created from secret."
+          else
+            echo "No YOUTUBE_COOKIES secret provided."
+          fi
 
       - name: Build yt-dlp Command & Execute
         shell: bash
         run: |
+          set -euo pipefail
+
+          sanitize_fragments() {
+            local n="$1"
+            if [[ ! "$n" =~ ^[0-9]+$ ]]; then
+              echo "4"
+              return
+            fi
+            if (( n < 1 )); then
+              echo "1"
+            elif (( n > 8 )); then
+              echo "8"
+            else
+              echo "$n"
+            fi
+          }
+
           CMD=(yt-dlp)
-          CMD+=(--force-ipv4)
-          CMD+=(--extractor-args "youtube:player_client=ios,web_music,web,tv")
-          CMD+=(--js-runtimes "node")
+
+          # Logging / stability
           CMD+=(--newline)
+          CMD+=(--progress)
+          CMD+=(--verbose)
+          CMD+=(--no-warnings)
           CMD+=(--abort-on-error)
+
+          # Network resiliency
+          CMD+=(--force-ipv4)
+          CMD+=(--socket-timeout 30)
+          CMD+=(--retries 10)
+          CMD+=(--fragment-retries 10)
+          CMD+=(--extractor-retries 5)
+          CMD+=(--file-access-retries 3)
+          CMD+=(--retry-sleep 2)
+          CMD+=(--skip-unavailable-fragments)
+
+          # Safer defaults for YouTube access
+          CMD+=(--extractor-args "youtube:player_client=web,android")
+          CMD+=(--sleep-requests 1)
+          CMD+=(--sleep-interval 1)
+          CMD+=(--max-sleep-interval 5)
+
+          # Use cookies if available
+          if [[ -f "cookies.txt" ]] && [[ -s "cookies.txt" ]]; then
+            CMD+=(--cookies "cookies.txt")
+          fi
 
           FORMAT_INPUT="${{ inputs.output_format }}"
           V_QUAL="${{ inputs.video_quality }}"
           A_QUAL="${{ inputs.audio_quality }}"
           V_CODEC="${{ inputs.video_codec }}"
+          CONCURRENT="$(sanitize_fragments "${{ inputs.concurrent_fragments }}")"
 
           if [[ "$V_QUAL" != "best" ]]; then
-            HEIGHT=$(echo "$V_QUAL" | grep -oE '^[0-9]+')
+            HEIGHT="$(echo "$V_QUAL" | grep -oE '^[0-9]+' || true)"
+            [[ -z "${HEIGHT:-}" ]] && HEIGHT="best"
           else
             HEIGHT="best"
           fi
 
           if [[ "$FORMAT_INPUT" == "mp3 (audio only)" ]]; then
-            CMD+=(-x --audio-format "mp3" --audio-quality "${A_QUAL}K")
+            CMD+=(
+              -x
+              --audio-format "mp3"
+              --audio-quality "${A_QUAL}K"
+            )
           elif [[ "$FORMAT_INPUT" == "best (auto)" ]]; then
-            CMD+=(-f "bestvideo+bestaudio/best" --merge-output-format "mp4")
+            CMD+=(
+              -f "bestvideo+bestaudio/best"
+              --merge-output-format "mp4"
+            )
           else
             FORMAT_STR="bestvideo"
             if [[ "$HEIGHT" != "best" ]]; then
@@ -120,23 +201,26 @@ jobs:
               FORMAT_STR="${FORMAT_STR}[vcodec^=av01]"
             fi
 
-            CMD+=(-f "${FORMAT_STR}+bestaudio/best" --merge-output-format "mp4")
+            CMD+=(
+              -f "${FORMAT_STR}+bestaudio/best"
+              --merge-output-format "mp4"
+            )
           fi
 
-          CMD+=(--concurrent-fragments "${{ inputs.concurrent_fragments }}")
+          CMD+=(--concurrent-fragments "$CONCURRENT")
 
           T_START="${{ inputs.trim_start }}"
           T_END="${{ inputs.trim_end }}"
-          if [ -n "$T_START" ] && [ -n "$T_END" ]; then
+          if [[ -n "${T_START:-}" && -n "${T_END:-}" ]]; then
             CMD+=(--download-sections "*${T_START}-${T_END}" --force-keyframes-at-cuts)
-          elif [ -n "$T_START" ]; then
+          elif [[ -n "${T_START:-}" ]]; then
             CMD+=(--download-sections "*${T_START}-inf" --force-keyframes-at-cuts)
-          elif [ -n "$T_END" ]; then
+          elif [[ -n "${T_END:-}" ]]; then
             CMD+=(--download-sections "*0-${T_END}" --force-keyframes-at-cuts)
           fi
 
           PL_ITEMS="${{ inputs.playlist_items }}"
-          if [ -z "$PL_ITEMS" ]; then
+          if [[ -z "${PL_ITEMS:-}" ]]; then
             CMD+=(--no-playlist)
           elif [[ "$PL_ITEMS" != "all" ]]; then
             CMD+=(--playlist-items "$PL_ITEMS")
@@ -149,31 +233,40 @@ jobs:
           if [[ "${{ inputs.embed_metadata }}" == "true" ]]; then
             CMD+=(--embed-thumbnail --embed-metadata)
           fi
+
           if [[ "${{ inputs.embed_chapters }}" == "true" ]]; then
             CMD+=(--embed-chapters)
           fi
+
           if [[ "${{ inputs.write_description }}" == "true" ]]; then
             CMD+=(--write-description)
           fi
+
           if [[ "${{ inputs.sponsorblock }}" == "true" ]]; then
             CMD+=(--sponsorblock-remove "sponsor,intro,outro,selfpromo,interaction")
           fi
 
-          if [ -f "cookies.txt" ]; then
-            CMD+=(--cookies "cookies.txt")
-          fi
-
           EXTRA="${{ inputs.extra_args }}"
-          if [ -n "$EXTRA" ]; then
+          if [[ -n "${EXTRA:-}" ]]; then
             read -r -a EXTRA_ARRAY <<< "$EXTRA"
             CMD+=("${EXTRA_ARRAY[@]}")
           fi
 
           mkdir -p "${{ inputs.output_folder }}"
-          CMD+=(-o "${{ inputs.output_folder }}/%(title)s [%(id)s].%(ext)s")
+          CMD+=(-o "${{ inputs.output_folder }}/%(title).180B [%(id)s].%(ext)s")
           CMD+=("${{ inputs.video_url }}")
 
-          echo "Executing Secure Command Array:"
+          echo "Executing command:"
           printf '%q ' "${CMD[@]}"
           echo
+
           "${CMD[@]}"
+
+      - name: Upload downloaded files
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-download
+          path: ${{ inputs.output_folder }}/
+          if-no-files-found: error
+          retention-days: 7
