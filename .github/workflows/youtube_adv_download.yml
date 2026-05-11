@@ -1,7 +1,88 @@
-این نسخه کاملاً پاک‌سازی شده، بدون هیچ کامنتی و با رعایت دقیق‌ترین اصول فاصله‌گذاری (Indentation) برای زبان YAML است. کافیست این بلوک را جایگزین کد قبلی کنی:
+name: YouTube Advanced Download
 
-```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "Video URL"
+        required: true
+      output_format:
+        description: "Format"
+        required: true
+        default: "best (auto)"
+      video_quality:
+        description: "Video quality"
+        required: true
+        default: "best"
+      audio_quality:
+        description: "Audio quality"
+        required: true
+        default: "192"
+      video_codec:
+        description: "Video codec"
+        required: true
+        default: "h264 (MP4 compatible)"
+      concurrent_fragments:
+        description: "Concurrent fragments"
+        required: true
+        default: "4"
+      trim_start:
+        description: "Trim start"
+        required: false
+      trim_end:
+        description: "Trim end"
+        required: false
+      playlist_items:
+        description: "Playlist items"
+        required: false
+      download_subtitles:
+        description: "Download subtitles"
+        required: true
+        default: "false"
+      subtitle_langs:
+        description: "Subtitle languages"
+        required: false
+        default: "en.*"
+      embed_metadata:
+        description: "Embed metadata"
+        required: true
+        default: "false"
+      embed_chapters:
+        description: "Embed chapters"
+        required: true
+        default: "false"
+      write_description:
+        description: "Write description"
+        required: true
+        default: "false"
+      sponsorblock:
+        description: "Remove sponsorblock segments"
+        required: true
+        default: "false"
+      extra_args:
+        description: "Extra args"
+        required: false
+      output_folder:
+        description: "Output folder"
+        required: true
+        default: "downloads"
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install yt-dlp and ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python3 -m pip install -U yt-dlp
+
       - name: Build yt-dlp Command & Execute
+        shell: bash
         run: |
           CMD=(yt-dlp)
           CMD+=(--force-ipv4)
@@ -14,13 +95,13 @@
           V_QUAL="${{ inputs.video_quality }}"
           A_QUAL="${{ inputs.audio_quality }}"
           V_CODEC="${{ inputs.video_codec }}"
-          
+
           if [[ "$V_QUAL" != "best" ]]; then
             HEIGHT=$(echo "$V_QUAL" | grep -oE '^[0-9]+')
           else
             HEIGHT="best"
           fi
-          
+
           if [[ "$FORMAT_INPUT" == "mp3 (audio only)" ]]; then
             CMD+=(-x --audio-format "mp3" --audio-quality "${A_QUAL}K")
           elif [[ "$FORMAT_INPUT" == "best (auto)" ]]; then
@@ -30,7 +111,7 @@
             if [[ "$HEIGHT" != "best" ]]; then
               FORMAT_STR="${FORMAT_STR}[height<=${HEIGHT}]"
             fi
-            
+
             if [[ "$V_CODEC" == "h264 (MP4 compatible)" ]]; then
               FORMAT_STR="${FORMAT_STR}[vcodec^=avc]"
             elif [[ "$V_CODEC" == "vp9" ]]; then
@@ -38,7 +119,7 @@
             elif [[ "$V_CODEC" == "av1" ]]; then
               FORMAT_STR="${FORMAT_STR}[vcodec^=av01]"
             fi
-            
+
             CMD+=(-f "${FORMAT_STR}+bestaudio/best" --merge-output-format "mp4")
           fi
 
@@ -88,10 +169,11 @@
             CMD+=("${EXTRA_ARRAY[@]}")
           fi
 
+          mkdir -p "${{ inputs.output_folder }}"
           CMD+=(-o "${{ inputs.output_folder }}/%(title)s [%(id)s].%(ext)s")
           CMD+=("${{ inputs.video_url }}")
 
           echo "Executing Secure Command Array:"
-          echo "${CMD[@]}"
+          printf '%q ' "${CMD[@]}"
+          echo
           "${CMD[@]}"
-```
