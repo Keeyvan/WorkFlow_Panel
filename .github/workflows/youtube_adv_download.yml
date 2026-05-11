@@ -1,110 +1,97 @@
-- name: Build yt-dlp Command & Execute
-  run: |
-    # مهندسی مجدد: استفاده از Bash Array برای امنیت ۱۰۰٪ در برابر Injection و Quoting
-    CMD=(yt-dlp)
+این نسخه کاملاً پاک‌سازی شده، بدون هیچ کامنتی و با رعایت دقیق‌ترین اصول فاصله‌گذاری (Indentation) برای زبان YAML است. کافیست این بلوک را جایگزین کد قبلی کنی:
 
-    # --- 🛡️ سیستم‌های ضد بن و پایداری (Anti-Ban & Stability) ---
-    CMD+=(--force-ipv4) # دور زدن تحریم‌های IPv6 گوگل برای سرورهای گیت‌هاب
-    CMD+=(--extractor-args "youtube:player_client=ios,web_music,web,tv") # جعل کلاینت برای بای‌پس خطای 403
-    CMD+=(--js-runtimes "node")
-    CMD+=(--newline)
-    CMD+=(--abort-on-error) # توقف هوشمند در صورت خرابی استریم
+```yaml
+      - name: Build yt-dlp Command & Execute
+        run: |
+          CMD=(yt-dlp)
+          CMD+=(--force-ipv4)
+          CMD+=(--extractor-args "youtube:player_client=ios,web_music,web,tv")
+          CMD+=(--js-runtimes "node")
+          CMD+=(--newline)
+          CMD+=(--abort-on-error)
 
-    # --- ۱. منطق فرمت و کیفیت ---
-    FORMAT_INPUT="${{ inputs.output_format }}"
-    V_QUAL="${{ inputs.video_quality }}"
-    A_QUAL="${{ inputs.audio_quality }}"
-    V_CODEC="${{ inputs.video_codec }}"
+          FORMAT_INPUT="${{ inputs.output_format }}"
+          V_QUAL="${{ inputs.video_quality }}"
+          A_QUAL="${{ inputs.audio_quality }}"
+          V_CODEC="${{ inputs.video_codec }}"
+          
+          if [[ "$V_QUAL" != "best" ]]; then
+            HEIGHT=$(echo "$V_QUAL" | grep -oE '^[0-9]+')
+          else
+            HEIGHT="best"
+          fi
+          
+          if [[ "$FORMAT_INPUT" == "mp3 (audio only)" ]]; then
+            CMD+=(-x --audio-format "mp3" --audio-quality "${A_QUAL}K")
+          elif [[ "$FORMAT_INPUT" == "best (auto)" ]]; then
+            CMD+=(-f "bestvideo+bestaudio/best" --merge-output-format "mp4")
+          else
+            FORMAT_STR="bestvideo"
+            if [[ "$HEIGHT" != "best" ]]; then
+              FORMAT_STR="${FORMAT_STR}[height<=${HEIGHT}]"
+            fi
+            
+            if [[ "$V_CODEC" == "h264 (MP4 compatible)" ]]; then
+              FORMAT_STR="${FORMAT_STR}[vcodec^=avc]"
+            elif [[ "$V_CODEC" == "vp9" ]]; then
+              FORMAT_STR="${FORMAT_STR}[vcodec^=vp9]"
+            elif [[ "$V_CODEC" == "av1" ]]; then
+              FORMAT_STR="${FORMAT_STR}[vcodec^=av01]"
+            fi
+            
+            CMD+=(-f "${FORMAT_STR}+bestaudio/best" --merge-output-format "mp4")
+          fi
 
-    if [[ "$V_QUAL" != "best" ]]; then
-      HEIGHT=$(echo "$V_QUAL" | grep -oE '^[0-9]+')
-    else
-      HEIGHT="best"
-    fi
+          CMD+=(--concurrent-fragments "${{ inputs.concurrent_fragments }}")
 
-    if [[ "$FORMAT_INPUT" == "mp3 (audio only)" ]]; then
-      CMD+=(-x --audio-format "mp3" --audio-quality "${A_QUAL}K")
-    elif [[ "$FORMAT_INPUT" == "best (auto)" ]]; then
-      CMD+=(-f "bestvideo+bestaudio/best" --merge-output-format "mp4")
-    else
-      FORMAT_STR="bestvideo"
-      if [[ "$HEIGHT" != "best" ]]; then
-        FORMAT_STR="${FORMAT_STR}[height<=${HEIGHT}]"
-      fi
-      
-      if [[ "$V_CODEC" == "h264 (MP4 compatible)" ]]; then
-        FORMAT_STR="${FORMAT_STR}[vcodec^=avc]"
-      elif [[ "$V_CODEC" == "vp9" ]]; then
-        FORMAT_STR="${FORMAT_STR}[vcodec^=vp9]"
-      elif [[ "$V_CODEC" == "av1" ]]; then
-        FORMAT_STR="${FORMAT_STR}[vcodec^=av01]"
-      fi
-      
-      CMD+=(-f "${FORMAT_STR}+bestaudio/best" --merge-output-format "mp4")
-    fi
+          T_START="${{ inputs.trim_start }}"
+          T_END="${{ inputs.trim_end }}"
+          if [ -n "$T_START" ] && [ -n "$T_END" ]; then
+            CMD+=(--download-sections "*${T_START}-${T_END}" --force-keyframes-at-cuts)
+          elif [ -n "$T_START" ]; then
+            CMD+=(--download-sections "*${T_START}-inf" --force-keyframes-at-cuts)
+          elif [ -n "$T_END" ]; then
+            CMD+=(--download-sections "*0-${T_END}" --force-keyframes-at-cuts)
+          fi
 
-    # --- ۲. سرعت (Fragments) ---
-    CMD+=(--concurrent-fragments "${{ inputs.concurrent_fragments }}")
+          PL_ITEMS="${{ inputs.playlist_items }}"
+          if [ -z "$PL_ITEMS" ]; then
+            CMD+=(--no-playlist)
+          elif [[ "$PL_ITEMS" != "all" ]]; then
+            CMD+=(--playlist-items "$PL_ITEMS")
+          fi
 
-    # --- ۳. برش (Trimming) ---
-    T_START="${{ inputs.trim_start }}"
-    T_END="${{ inputs.trim_end }}"
-    if [ -n "$T_START" ] && [ -n "$T_END" ]; then
-      CMD+=(--download-sections "*${T_START}-${T_END}" --force-keyframes-at-cuts)
-    elif [ -n "$T_START" ]; then
-      CMD+=(--download-sections "*${T_START}-inf" --force-keyframes-at-cuts)
-    elif [ -n "$T_END" ]; then
-      CMD+=(--download-sections "*0-${T_END}" --force-keyframes-at-cuts)
-    fi
+          if [[ "${{ inputs.download_subtitles }}" == "true" ]]; then
+            CMD+=(--write-subs --write-auto-subs --sub-langs "${{ inputs.subtitle_langs }}")
+          fi
 
-    # --- ۴. مدیریت پلی‌لیست ---
-    PL_ITEMS="${{ inputs.playlist_items }}"
-    if [ -z "$PL_ITEMS" ]; then
-      CMD+=(--no-playlist)
-    elif [[ "$PL_ITEMS" != "all" ]]; then
-      CMD+=(--playlist-items "$PL_ITEMS")
-    fi
+          if [[ "${{ inputs.embed_metadata }}" == "true" ]]; then
+            CMD+=(--embed-thumbnail --embed-metadata)
+          fi
+          if [[ "${{ inputs.embed_chapters }}" == "true" ]]; then
+            CMD+=(--embed-chapters)
+          fi
+          if [[ "${{ inputs.write_description }}" == "true" ]]; then
+            CMD+=(--write-description)
+          fi
+          if [[ "${{ inputs.sponsorblock }}" == "true" ]]; then
+            CMD+=(--sponsorblock-remove "sponsor,intro,outro,selfpromo,interaction")
+          fi
 
-    # --- ۵. زیرنویس‌ها ---
-    if [[ "${{ inputs.download_subtitles }}" == "true" ]]; then
-      CMD+=(--write-subs --write-auto-subs --sub-langs "${{ inputs.subtitle_langs }}")
-    fi
+          if [ -f "cookies.txt" ]; then
+            CMD+=(--cookies "cookies.txt")
+          fi
 
-    # --- ۶. متادیتا و امکانات پیشرفته ---
-    if [[ "${{ inputs.embed_metadata }}" == "true" ]]; then
-      CMD+=(--embed-thumbnail --embed-metadata)
-    fi
-    if [[ "${{ inputs.embed_chapters }}" == "true" ]]; then
-      CMD+=(--embed-chapters)
-    fi
-    if [[ "${{ inputs.write_description }}" == "true" ]]; then
-      CMD+=(--write-description)
-    fi
-    if [[ "${{ inputs.sponsorblock }}" == "true" ]]; then
-      CMD+=(--sponsorblock-remove "sponsor,intro,outro,selfpromo,interaction")
-    fi
+          EXTRA="${{ inputs.extra_args }}"
+          if [ -n "$EXTRA" ]; then
+            read -r -a EXTRA_ARRAY <<< "$EXTRA"
+            CMD+=("${EXTRA_ARRAY[@]}")
+          fi
 
-    # --- ۷. کوکی‌ها ---
-    if [ -f "cookies.txt" ]; then
-      CMD+=(--cookies "cookies.txt")
-    fi
+          CMD+=(-o "${{ inputs.output_folder }}/%(title)s [%(id)s].%(ext)s")
+          CMD+=("${{ inputs.video_url }}")
 
-    # --- ۸. آرگومان‌های اضافه (به صورت تفکیک شده) ---
-    EXTRA="${{ inputs.extra_args }}"
-    if [ -n "$EXTRA" ]; then
-      read -r -a EXTRA_ARRAY <<< "$EXTRA"
-      CMD+=("${EXTRA_ARRAY[@]}")
-    fi
-
-    # --- ۹. پوشه خروجی و فایل نهایی ---
-    CMD+=(-o "${{ inputs.output_folder }}/%(title)s [%(id)s].%(ext)s")
-
-    # اضافه کردن لینک یوتیوب به انتهای آرایه (بدون نیاز به کوتیشن‌گذاری دستی!)
-    CMD+=("${{ inputs.video_url }}")
-
-    # --- 🚀 اجرا ---
-    echo "Executing Secure Command Array:"
-    echo "${CMD[@]}"
-
-    # اجرای مستقیم آرایه بدون استفاده از eval خطرناک
-    "${CMD[@]}"
+          echo "Executing Secure Command Array:"
+          echo "${CMD[@]}"
+          "${CMD[@]}"
+```
